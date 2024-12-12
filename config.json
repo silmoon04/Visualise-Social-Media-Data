@@ -1,0 +1,35 @@
+{
+    "global": {
+        "output_folder": "output",
+        "start_date": "2023-12-01",
+        "end_date": "2024-12-01"
+    },
+    "clean_and_combine_json_files": {
+        "input_folder": "path/to/your/instagram/messages/inbox",
+        "output_file": "combined_messages.json"
+    },
+    "process_chat_data": {
+        "chat_file": "output/combined_messages.json",
+        "output_csv": "chat_data.csv",
+        "calls_csv": "calls_data.csv",
+        "your_name": "your_name_here",
+        "reading_speed_cpm": 1200,
+        "typing_speed_cpm": 200
+    },
+    "export_tiktok_watch_time": {
+        "input_file": "path/to/your/tiktok/data.json",
+        "output_csv": "tiktok_watch_time.csv",
+        "default_video_duration_seconds": 15
+    },
+    "youtube_watch_time": {
+        "input_file": "path/to/your/youtube/watch-history.json",
+        "output_csv": "youtube_watch_time.csv",
+        "playback_speed": 1.0,
+        "api_key_env": "YOUTUBE_API_KEY"
+    },
+    "export_reels_watch_time": {
+        "input_file": "path/to/your/instagram/liked_posts.json",
+        "output_csv": "ig_reels_watch_time.csv",
+        "default_video_duration_seconds": 30
+    }
+}
