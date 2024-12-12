@@ -74,7 +74,7 @@ In this part, you'll use Python scripts to convert your raw data (from Instagram
    Set file paths, username, date ranges, playback speed, etc.
 
    Example:
-   ```json
+   ```javascript
    {
        "global": {
            "output_folder": "output",
