@@ -183,18 +183,43 @@ In Part 1, you'll use Python scripts to convert your raw data (from Instagram, T
 
 ### Usage (Part 1)
 
-1. **Run the Python Scripts to Process Data:**
+1. **Run the full processing pipeline**
    ```bash
-   python process_chat_data.py
-   python export_tiktok_watch_time.py
-   python youtube_watch_time.py
-   python export_reels_watch_time.py
+   cd Part1_DataProcessing/scripts
+   python pipeline.py
    ```
 
-   *Each script will output CSV files into the `output` folder.*
+   The orchestrator reads the paths defined in `config.json`, writes results into the configured `output_folder`, and logs a
+   concise summary for each task.
 
-2. **Move CSV Files to Part 2:**
+2. **Run individual scripts if needed**
+   ```bash
+   cd Part1_DataProcessing/scripts
+   python parse_chats.py        # Chat effort analytics
+   python parse_data_tiktok.py  # TikTok watch sessions
+   python process_yt_watchtime.py  # YouTube watch history
+   python parse_ig_likes.py     # Instagram reels usage
+   ```
+
+   *Each script writes CSV files into the `output` folder. Date ranges are inclusive of the `start_date` and exclusive of the
+   `end_date`, so use the following day when you want a closed interval.*
+
+3. **Move CSV Files to Part 2:**
    - Move the processed CSV files into the `Part2_Visualization/data` directory (or the directory expected by Part 2).
+
+### Development
+
+- **Install dependencies**
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+- **Run the automated test suite**
+  ```bash
+  pytest
+  ```
+
+  The tests cover the most intricate data conversions, making it easier to evolve the pipeline with confidence.
 
 ### Data Privacy
 

@@ -1,122 +1,185 @@
+"""Command line pipeline orchestrating the data processing tasks."""
+from __future__ import annotations
+
 import json
+import logging
+from pathlib import Path
+from typing import Any, Dict
+
+from dotenv import load_dotenv
+
 from clean_and_combine_json_files import clean_and_combine_json_files
-from parse_chats import process_chat_data
+from parse_chats import ChatProcessingSummary, process_chat_data
 from parse_data_tiktok import export_tiktok_watch_time
 from parse_ig_likes import export_reels_watch_time
 from process_yt_watchtime import process_yt_watchtime
-from dotenv import load_dotenv
-import os
 
 # Load environment variables from .env file
 load_dotenv()
 
-def load_config(config_path: str):
+LOGGER = logging.getLogger(__name__)
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure a sensible default logging setup."""
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+
+
+def load_config(config_path: str | Path) -> Dict[str, Any]:
+    """Load the JSON configuration file used by the pipeline."""
+    config_file = Path(config_path)
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            if not content.strip():
-                raise ValueError("Config file is empty.")
-            return json.loads(content)
-    except FileNotFoundError:
-        print(f"Error: '{config_path}' not found.")
-        exit(1)
-    except ValueError as e:
-        print(f"Error: {e}")
-        exit(1)
-    except json.JSONDecodeError as e:
-        print(f"Error: {e}")
-        exit(1)
+        content = config_file.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Configuration file '{config_file}' not found") from exc
 
-def ensure_output_folder(folder_path: str):
-    os.makedirs(folder_path, exist_ok=True)
+    if not content.strip():
+        raise ValueError("Configuration file is empty")
 
-def file_exists(file_path: str) -> bool:
-    """Check if a file exists."""
-    if not os.path.exists(file_path):
-        print(f"Skipping task: '{file_path}' not found.")
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Invalid JSON in configuration file: {exc}") from exc
+
+
+def ensure_output_folder(folder_path: str | Path) -> Path:
+    """Ensure that the output folder exists."""
+    path = Path(folder_path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def file_exists(file_path: str | Path) -> bool:
+    """Check if a file exists, logging a helpful message if it does not."""
+    if not Path(file_path).exists():
+        LOGGER.warning("Skipping task: '%s' not found.", file_path)
         return False
     return True
 
-def main():
-    config = load_config('config.json')
+
+def main(config_path: str = "config.json") -> int:
+    """Run the configured data-processing tasks."""
+    setup_logging()
+    config = load_config(config_path)
+
     global_config = config.get("global", {})
-    output_folder = global_config.get("output_folder", "output")
+    output_folder = ensure_output_folder(global_config.get("output_folder", "output"))
     start_date_str = global_config.get("start_date")
     end_date_str = global_config.get("end_date")
-    
-    if not start_date_str or not end_date_str:
-        print("Error: Start/end date missing in config.")
-        return
 
-    # Task 1
+    if not start_date_str or not end_date_str:
+        LOGGER.error("Start and end dates must be provided in the config")
+        return 1
+
+    status_code = 0
+
+    # Task 1 - combine instagram json files
     try:
         ccfg = config["clean_and_combine_json_files"]
         if file_exists(ccfg["input_folder"]):
-            combined_output = os.path.join(output_folder, ccfg["output_file"])
-            clean_and_combine_json_files(ccfg["input_folder"], combined_output, start_date_str, end_date_str)
-            print(f"Combined JSON -> {combined_output}")
+            combined_output = output_folder / ccfg["output_file"]
+            count = clean_and_combine_json_files(
+                ccfg["input_folder"],
+                combined_output,
+                start_date_str,
+                end_date_str,
+            )
+            LOGGER.info("Combined %s messages -> %s", count, combined_output)
     except KeyError:
-        print("Task 1 skipped.")
-    except Exception as e:
-        print(f"Task 1 error: {e}")
+        LOGGER.info("Task 'clean_and_combine_json_files' not configured; skipping")
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Task 'clean_and_combine_json_files' failed")
+        status_code = 1
 
-    # Task 2
+    # Task 2 - chat processing
     try:
         pcfg = config["process_chat_data"]
+        chat_file = output_folder / pcfg["output_csv"]
+        calls_file = output_folder / pcfg["calls_csv"]
         if file_exists(pcfg["chat_file"]):
-            chat_output = os.path.join(output_folder, pcfg["output_csv"])
-            calls_output = os.path.join(output_folder, pcfg["calls_csv"])
-            process_chat_data(pcfg["chat_file"], chat_output, calls_output, pcfg["your_name"], pcfg["reading_speed_cpm"], pcfg["typing_speed_cpm"])
-            print(f"Chat data -> {chat_output}")
-            print(f"Calls data -> {calls_output}")
+            summary: ChatProcessingSummary = process_chat_data(
+                chat_file_path=pcfg["chat_file"],
+                output_csv=chat_file,
+                calls_csv=calls_file,
+                your_name=pcfg["your_name"],
+                reading_speed_cpm=int(pcfg["reading_speed_cpm"]),
+                typing_speed_cpm=int(pcfg["typing_speed_cpm"]),
+            )
+            LOGGER.info(
+                "Chat data -> %s (events=%s, calls=%s)",
+                chat_file,
+                summary.events_logged,
+                summary.calls_logged,
+            )
     except KeyError:
-        print(f"Task 2 skipped: {pcfg}")
-    except Exception as e:
-        print(f"Task 2 error: {e}")
+        LOGGER.info("Task 'process_chat_data' not configured; skipping")
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Task 'process_chat_data' failed")
+        status_code = 1
 
-    # Task 3
+    # Task 3 - TikTok watch time
     try:
         tcfg = config["export_tiktok_watch_time"]
         if file_exists(tcfg["input_file"]):
-            tiktok_output = os.path.join(output_folder, tcfg["output_csv"])
-            export_tiktok_watch_time(tcfg["input_file"], tiktok_output, tcfg["default_video_duration_seconds"], start_date_str, end_date_str)
-            print(f"TikTok data -> {tiktok_output}")
+            tiktok_output = output_folder / tcfg["output_csv"]
+            events = export_tiktok_watch_time(
+                input_file=tcfg["input_file"],
+                output_csv=tiktok_output,
+                default_video_duration_seconds=int(tcfg["default_video_duration_seconds"]),
+                start_date=start_date_str,
+                end_date=end_date_str,
+            )
+            LOGGER.info("TikTok data -> %s (events=%s)", tiktok_output, events)
     except KeyError:
-        print("Task 3 skipped.")
-    except Exception as e:
-        print(f"Task 3 error: {e}")
+        LOGGER.info("Task 'export_tiktok_watch_time' not configured; skipping")
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Task 'export_tiktok_watch_time' failed")
+        status_code = 1
 
-    # Task 4
+    # Task 4 - YouTube watch time
     try:
         ycfg = config["youtube_watch_time"]
         if file_exists(ycfg["input_file"]):
-            yt_output = os.path.join(output_folder, ycfg["output_csv"])
+            yt_output = output_folder / ycfg["output_csv"]
             process_yt_watchtime(
                 input_file=ycfg["input_file"],
                 output_csv=yt_output,
-                playback_speed=ycfg["playback_speed"],
-                api_key=os.getenv(ycfg["api_key_env"]),
+                playback_speed=float(ycfg["playback_speed"]),
+                api_key_env=str(ycfg["api_key_env"]),
                 start_date=start_date_str,
-                end_date=end_date_str
+                end_date=end_date_str,
             )
-            print(f"YouTube data -> {yt_output}")
-            
+            LOGGER.info("YouTube data -> %s", yt_output)
     except KeyError:
-        print("Task 4 skipped.")
-    except Exception as e:
-        print(f"Task 4 error: {e}")
+        LOGGER.info("Task 'youtube_watch_time' not configured; skipping")
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Task 'youtube_watch_time' failed")
+        status_code = 1
 
-    # Task 5 (IG Reels)
+    # Task 5 - Instagram reels
     try:
-        igcfg = config.get("export_reels_watch_time", {})
+        igcfg = config.get("export_reels_watch_time")
         if igcfg and file_exists(igcfg["input_file"]):
-            ig_output = os.path.join(output_folder, igcfg["output_csv"])
-            export_reels_watch_time(igcfg["input_file"], ig_output, igcfg["default_video_duration_seconds"], start_date_str, end_date_str)
-            print(f"IG Reels data -> {ig_output}")
+            ig_output = output_folder / igcfg["output_csv"]
+            events = export_reels_watch_time(
+                input_file=igcfg["input_file"],
+                output_csv=ig_output,
+                default_video_duration_seconds=int(igcfg["default_video_duration_seconds"]),
+                start_date=start_date_str,
+                end_date=end_date_str,
+            )
+            LOGGER.info("IG Reels data -> %s (events=%s)", ig_output, events)
         else:
-            print("Task 5 skipped.")
-    except Exception as e:
-        print(f"Task 5 error: {e}")
+            LOGGER.info("Task 'export_reels_watch_time' not configured; skipping")
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Task 'export_reels_watch_time' failed")
+        status_code = 1
 
-if __name__ == "__main__":
-    main()
+    return status_code
+
+
+if __name__ == "__main__":  # pragma: no cover - manual invocation
+    raise SystemExit(main())

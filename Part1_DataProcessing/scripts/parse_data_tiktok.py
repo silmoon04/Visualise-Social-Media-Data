@@ -1,69 +1,118 @@
-import json
-from datetime import datetime
+"""Process TikTok liked items into session-based watch durations."""
+from __future__ import annotations
+
 import csv
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Iterable, List
 
-def export_tiktok_watch_time(input_file: str, output_csv: str, default_video_duration_seconds: int, start_date: str, end_date: str):
+LOGGER = logging.getLogger(__name__)
+
+
+def _load_json(input_file: Path) -> Dict[str, object]:
     try:
-        with open(input_file, encoding="utf-8") as file:
-            data = json.load(file)
-    except FileNotFoundError:
-        print(f"Error: '{input_file}' not found.")
-        return
-    except json.JSONDecodeError as e:
-        print(f"Error parsing '{input_file}': {e}")
-        return
+        return json.loads(input_file.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"'{input_file}' not found") from exc
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Error parsing '{input_file}': {exc}") from exc
 
-    liked_items = data.get("Activity", {}).get("Like List", {}).get("ItemFavoriteList", [])
+
+def _group_sessions(
+    timestamps: Iterable[datetime],
+    default_video_duration_seconds: int,
+) -> List[Dict[str, float]]:
+    sessions: List[Dict[str, float]] = []
+    sorted_times = sorted(timestamps)
+    if not sorted_times:
+        return sessions
+
+    session_start = sorted_times[0]
+    duration_seconds = default_video_duration_seconds
+
+    for previous, current in zip(sorted_times, sorted_times[1:]):
+        gap = (current - previous).total_seconds()
+        if gap <= 60:
+            duration_seconds += default_video_duration_seconds
+        else:
+            sessions.append(
+                {
+                    "start": session_start,
+                    "duration_minutes": duration_seconds / 60,
+                }
+            )
+            session_start = current
+            duration_seconds = default_video_duration_seconds
+
+    sessions.append({"start": session_start, "duration_minutes": duration_seconds / 60})
+    return sessions
+
+
+def export_tiktok_watch_time(
+    input_file: str | Path,
+    output_csv: str | Path,
+    default_video_duration_seconds: int,
+    start_date: str,
+    end_date: str,
+) -> int:
+    """Convert liked reels/posts into approximate watch durations."""
+    if default_video_duration_seconds <= 0:
+        raise ValueError("default_video_duration_seconds must be positive")
+
+    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    data = _load_json(Path(input_file))
+    liked_items = (
+        data.get("Activity", {})
+        .get("Like List", {})
+        .get("ItemFavoriteList", [])
+    )
     if not liked_items:
-        print("No liked items found.")
-        return
+        LOGGER.info("No liked items found in %s", input_file)
+        return 0
 
-    try:
-        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-    except ValueError as e:
-        print(f"Error in date format: {e}")
-        return
-
-    events = []
-    sessions = {}
+    by_day: Dict[datetime.date, List[datetime]] = {}
     for item in liked_items:
         date_str = item.get("Date")
-        if not date_str:
+        if not isinstance(date_str, str):
             continue
         try:
             timestamp = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
         except ValueError:
+            LOGGER.debug("Skipping unparseable TikTok timestamp: %s", date_str)
             continue
-        day = timestamp.date()
-        if not (start_date_obj <= day < end_date_obj):
+
+        if not (start_date_obj <= timestamp.date() < end_date_obj):
             continue
-        sessions.setdefault(day, []).append(timestamp)
+        by_day.setdefault(timestamp.date(), []).append(timestamp)
 
-    for day, times in sessions.items():
-        times.sort()
-        day_of_year = (day - start_date_obj).days + 1
-        session_start = times[0]
-        duration = default_video_duration_seconds
-        for i in range(1, len(times)):
-            if (times[i] - times[i - 1]).total_seconds() <= 60:
-                duration += default_video_duration_seconds
-            else:
-                events.append({
-                    'DayOfYear': day_of_year,
-                    'MinuteOfDay': session_start.hour * 60 + session_start.minute,
-                    'Duration': duration / 60
-                })
-                session_start = times[i]
-                duration = default_video_duration_seconds
-        events.append({
-            'DayOfYear': day_of_year,
-            'MinuteOfDay': session_start.hour * 60 + session_start.minute,
-            'Duration': duration / 60
-        })
+    events: List[Dict[str, float]] = []
+    for day, timestamps in by_day.items():
+        sessions = _group_sessions(timestamps, default_video_duration_seconds)
+        for session in sessions:
+            events.append(
+                {
+                    "DayOfYear": (day - start_date_obj).days + 1,
+                    "MinuteOfDay": session["start"].hour * 60 + session["start"].minute,
+                    "Duration": session["duration_minutes"],
+                }
+            )
 
-    with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=['DayOfYear', 'MinuteOfDay', 'Duration'])
+    events.sort(key=lambda entry: (entry["DayOfYear"], entry["MinuteOfDay"]))
+
+    output_path = Path(output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["DayOfYear", "MinuteOfDay", "Duration"])
         writer.writeheader()
         writer.writerows(events)
-    print(f"TikTok watch time -> {output_csv}")
+
+    LOGGER.info("TikTok watch time -> %s (events=%s)", output_path, len(events))
+    return len(events)
+
+
+__all__ = ["export_tiktok_watch_time"]
+
