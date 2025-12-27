@@ -28,8 +28,18 @@ def setup_logging(level: int = logging.INFO) -> None:
     )
 
 
+def validate_config(config: Dict[str, Any]) -> None:
+    """Validate that the configuration contains all required fields."""
+    required_global = ["output_folder", "start_date", "end_date"]
+    if "global" not in config:
+        raise ValueError("Config missing 'global' section")
+    
+    for field in required_global:
+        if field not in config["global"]:
+            raise ValueError(f"Config missing required global field: {field}")
+
 def load_config(config_path: str | Path) -> Dict[str, Any]:
-    """Load the JSON configuration file used by the pipeline."""
+    """Load and validate the JSON configuration file."""
     config_file = Path(config_path)
     try:
         content = config_file.read_text(encoding="utf-8")
@@ -40,7 +50,9 @@ def load_config(config_path: str | Path) -> Dict[str, Any]:
         raise ValueError("Configuration file is empty")
 
     try:
-        return json.loads(content)
+        config = json.loads(content)
+        validate_config(config)
+        return config
     except json.JSONDecodeError as exc:  # pragma: no cover - defensive
         raise ValueError(f"Invalid JSON in configuration file: {exc}") from exc
 
